@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="やりたい帳" />
+<meta name="theme-color" content="#FAF4EC" />
+<title>やりたい帳</title>
+<style>
+  * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #FAF4EC; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif; }
+  input, textarea, button { font-family: inherit; }
+  input[type="date"] { -webkit-appearance: none; appearance: none; min-height: 44px; }
+  input[type="date"]::-webkit-date-and-time-value { text-align: left; margin: 0; }
+  input[type="date"]::-webkit-calendar-picker-indicator { margin: 0; }
+  #root { min-height: 100vh; }
+</style>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+const C = {
+  paper:"#FAF4EC", ink:"#2B2622", sub:"#8A8077", line:"#E7DDCF",
+  daily:"#F4A93C", limited:"#E15B43", someday:"#2E4A7D", done:"#5B8A5A",
+};
+const MAX_PHOTOS = 5;
+
+// ---- アイコン（自前SVG・依存なし）----
+const I = (paths) => ({size=24, strokeWidth=2, style, fill="none"}) =>
+  <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor"
+    strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" style={style}>{paths}</svg>;
+const Dices  = I(<g><rect x="3" y="3" width="13" height="13" rx="2"/><circle cx="7" cy="7" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><path d="M16 9.5h2.5a2 2 0 0 1 2 2V19a2 2 0 0 1-2 2h-7.5"/></g>);
+const Clock  = I(<g><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></g>);
+const Sparkles = I(<g><path d="M12 3l1.7 4.6L18.5 9.5 13.7 11.2 12 16 10.3 11.2 5.5 9.5 10.3 7.6z"/><path d="M19 15l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></g>);
+const Trophy = I(<g><path d="M7 4h10v5a5 5 0 0 1-10 0z"/><path d="M7 5H4a3 3 0 0 0 3 4.5"/><path d="M17 5h3a3 3 0 0 1-3 4.5"/><path d="M12 14v4M8 20h8"/></g>);
+const Plus   = I(<path d="M12 5v14M5 12h14"/>);
+const Check  = I(<path d="M20 6L9 17l-5-5"/>);
+const X      = I(<path d="M18 6L6 18M6 6l12 12"/>);
+const Star   = I(<path d="M12 3l2.5 6.1 6.5.5-5 4.3 1.6 6.4L12 17.5 6.4 20.8 8 14.4l-5-4.3 6.5-.5z"/>);
+const ImagePlus = I(<g><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7"/><path d="M16 5h6M19 2v6"/><circle cx="8.5" cy="9" r="1.5"/><path d="M3 16l4-3 4 3 3-2 4 3"/></g>);
+
+const ZONES = {
+  daily:   { label:"日常",   color:C.daily,   Icon:Dices,    hint:"思いついたら、どんどん。迷ったらルーレットで選ぶ。" },
+  limited: { label:"いまだけ", color:C.limited, Icon:Clock,    hint:"展覧会やイベントなど、いま行かないと終わるもの。" },
+  someday: { label:"いつか", color:C.someday, Icon:Sparkles, hint:"人生でいつかやりたい、眺めるための棚。" },
+  done:    { label:"記録",   color:C.done,    Icon:Trophy,   hint:"叶えたことが、写真と一緒に貯まっていく。" },
+};
+
+const KEY="yaritai_items", PKEY="yaritai_photos";
+const uid = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+const startOfDay = (d) => { const x=new Date(d); x.setHours(0,0,0,0); return x; };
+const daysLeft = (e) => Math.round((startOfDay(e)-startOfDay(new Date()))/86400000);
+
+function compress(file, max=900, q=0.72) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        let w=img.width, h=img.height;
+        if (w>h && w>max){ h=h*max/w; w=max; } else if (h>max){ w=w*max/h; h=max; }
+        const cv=document.createElement("canvas"); cv.width=w; cv.height=h;
+        cv.getContext("2d").drawImage(img,0,0,w,h);
+        res(cv.toDataURL("image/jpeg",q));
+      };
+      img.onerror=rej; img.src=r.result;
+    };
+    r.onerror=rej; r.readAsDataURL(file);
+  });
+}
+
+function App() {
+  const [items, setItems] = useState([]);
+  const [photos, setPhotos] = useState({});
+  const [loaded, setLoaded] = useState(false);
+  const [tab, setTab] = useState("daily");
+  const [lightbox, setLightbox] = useState(null);
+
+  useEffect(() => {
+    try { const i=localStorage.getItem(KEY); if(i) setItems(JSON.parse(i)); } catch(e){}
+    try { const p=localStorage.getItem(PKEY); if(p) setPhotos(JSON.parse(p)); } catch(e){}
+    setLoaded(true);
+  }, []);
+  useEffect(() => { if(!loaded) return; try{ localStorage.setItem(KEY, JSON.stringify(items)); }catch(e){} }, [items, loaded]);
+  useEffect(() => { if(!loaded) return; try{ localStorage.setItem(PKEY, JSON.stringify(photos)); }catch(e){ console.warn("写真の保存に失敗（容量上限の可能性）", e); } }, [photos, loaded]);
+
+  const add = (zone, title, endDate) => {
+    const t=(title||"").trim(); if(!t) return;
+    setItems((p)=>[{ id:uid(), title:t, zone, endDate:endDate||null, done:false, createdAt:Date.now() }, ...p]);
+  };
+  const remove = (id) => {
+    setItems((p)=>p.filter((i)=>i.id!==id));
+    setPhotos((p)=>{ const n={...p}; delete n[id]; return n; });
+  };
+  const achieve = (id, note) => setItems((p)=>p.map((i)=>i.id===id?{...i, done:true, doneAt:Date.now(), note:note||""}:i));
+  const savePhotos = (id, arr) => setPhotos((p)=>({ ...p, [id]:arr }));
+
+  const doneCount = items.filter((i)=>i.done).length;
+
+  return (
+    <div style={{ background:C.paper, color:C.ink, minHeight:"100vh" }}>
+      <div style={{ maxWidth:480, margin:"0 auto", minHeight:"100vh", display:"flex", flexDirection:"column" }}>
+        <header style={{ padding:"max(22px, env(safe-area-inset-top)) 20px 0" }}>
+          <div style={{ display:"flex", alignItems:"baseline", justifyContent:"space-between" }}>
+            <h1 style={{ fontSize:26, fontWeight:800, letterSpacing:"0.04em", margin:0, position:"relative" }}>
+              やりたい帳
+              <svg width="92" height="8" viewBox="0 0 92 8" style={{ position:"absolute", left:0, bottom:-6 }}>
+                <path d="M2 5 Q 24 1 46 4 T 90 3" stroke={C.daily} strokeWidth="3" fill="none" strokeLinecap="round"/>
+              </svg>
+            </h1>
+            <div style={{ fontSize:13, color:C.sub }}>叶えた <span style={{ fontSize:18, fontWeight:800, color:C.done }}>{doneCount}</span></div>
+          </div>
+          <p style={{ fontSize:12.5, color:C.sub, margin:"14px 0 12px" }}>消すリストじゃなくて、貯めるリスト。</p>
+          <div style={{ display:"flex", height:3, borderRadius:3, overflow:"hidden" }}>
+            {Object.values(ZONES).map((z,i)=><div key={i} style={{ flex:1, background:z.color }}/>)}
+          </div>
+        </header>
+        <main style={{ flex:1, overflowY:"auto", padding:"16px 16px 24px" }}>
+          {!loaded ? <p style={{ color:C.sub, textAlign:"center", marginTop:40 }}>読み込み中…</p>
+            : <Zone tab={tab} items={items} photos={photos} onAdd={add} onAchieve={achieve} onRemove={remove} onSavePhotos={savePhotos} onView={setLightbox}/>}
+        </main>
+        <nav style={{ position:"sticky", bottom:0, display:"flex", background:C.paper, borderTop:`1px solid ${C.line}`, paddingBottom:"env(safe-area-inset-bottom)" }}>
+          {Object.entries(ZONES).map(([k,z])=>{
+            const active=tab===k;
+            return (
+              <button key={k} onClick={()=>setTab(k)} aria-label={z.label}
+                style={{ flex:1, padding:"10px 0 12px", border:"none", background:"transparent", cursor:"pointer",
+                  color:active?z.color:C.sub, display:"flex", flexDirection:"column", alignItems:"center", gap:3,
+                  borderTop:`2px solid ${active?z.color:"transparent"}`, marginTop:-1 }}>
+                <z.Icon size={20} strokeWidth={active?2.4:1.8}/>
+                <span style={{ fontSize:11, fontWeight:active?700:500 }}>{z.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </div>
+      {lightbox && <Backdrop onClose={()=>setLightbox(null)}><img src={lightbox} alt="" style={{ width:"100%", borderRadius:14, display:"block" }}/></Backdrop>}
+    </div>
+  );
+}
+
+function Zone(p){
+  if(p.tab==="daily") return <Daily {...p}/>;
+  if(p.tab==="limited") return <Limited {...p}/>;
+  if(p.tab==="someday") return <Someday {...p}/>;
+  return <Done {...p}/>;
+}
+
+function InputRow({ color, placeholder, onAdd }){
+  const [text,setText]=useState(""); const ref=useRef(null);
+  const go=()=>{ onAdd(text); setText(""); ref.current && ref.current.focus(); };
+  return (
+    <div style={{ display:"flex", gap:8, marginBottom:16 }}>
+      <input ref={ref} value={text} onChange={(e)=>setText(e.target.value)} onKeyDown={(e)=>e.key==="Enter"&&go()}
+        placeholder={placeholder} style={{ flex:1, border:`1px solid ${C.line}`, borderRadius:10, padding:"11px 12px", fontSize:15, outline:"none", background:"#fff", color:C.ink }}/>
+      <button onClick={go} aria-label="追加" style={{ border:"none", background:color, color:"#fff", borderRadius:10, width:44, cursor:"pointer", display:"grid", placeItems:"center" }}><Plus size={20}/></button>
+    </div>
+  );
+}
+
+function Daily(p){
+  const list=p.items.filter((i)=>i.zone==="daily"&&!i.done);
+  const [ach,setAch]=useState(null); const [roul,setRoul]=useState(false);
+  return (
+    <div>
+      <ZoneIntro k="daily"/>
+      <InputRow color={C.daily} placeholder="やりたいことを入力…" onAdd={(t)=>p.onAdd("daily",t)}/>
+      <button onClick={()=>setRoul(true)} disabled={!list.length}
+        style={{ width:"100%", border:"none", borderRadius:14, padding:16, cursor:list.length?"pointer":"default",
+          background:list.length?C.daily:C.line, color:list.length?"#fff":C.sub, fontSize:16, fontWeight:800,
+          display:"flex", alignItems:"center", justifyContent:"center", gap:8, marginBottom:18, boxShadow:list.length?"0 4px 0 rgba(0,0,0,0.12)":"none" }}>
+        <Dices size={20}/> {list.length?"ルーレットを回す":"まず やりたいことを入れてね"}
+      </button>
+      <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+        {list.map((i)=>(
+          <Card key={i.id} accent={C.daily}>
+            <AchieveBtn onClick={()=>setAch(i)}/><span style={{ flex:1, fontSize:15 }}>{i.title}</span><DelX onClick={()=>p.onRemove(i.id)}/>
+          </Card>
+        ))}
+        {!list.length && <Empty art="daily">思いついたこと、ひとつ書いてみよう。</Empty>}
+      </div>
+      {ach && <AchieveSheet item={ach} onClose={()=>setAch(null)} onConfirm={(note,ph)=>{ p.onAchieve(ach.id,note); if(ph.length)p.onSavePhotos(ach.id,ph); setAch(null); }}/>}
+      {roul && <Roulette pool={list} onClose={()=>setRoul(false)} onAchieve={(id)=>p.onAchieve(id,"")}/>}
+    </div>
+  );
+}
+
+function Limited(p){
+  const [open,setOpen]=useState(false); const [title,setTitle]=useState(""); const [date,setDate]=useState(""); const [ach,setAch]=useState(null);
+  const list=p.items.filter((i)=>i.zone==="limited"&&!i.done).sort((a,b)=>(a.endDate||"9999").localeCompare(b.endDate||"9999"));
+  const save=()=>{ if(!title.trim())return; p.onAdd("limited",title,date||null); setTitle(""); setDate(""); setOpen(false); };
+  return (
+    <div>
+      <ZoneIntro k="limited"/>
+      <AddBar onClick={()=>setOpen(true)} color={C.limited} label="いま行きたいものを追加"/>
+      <div style={{ display:"flex", flexDirection:"column", gap:10, marginTop:14 }}>
+        {list.map((i)=>{
+          const d=i.endDate?daysLeft(i.endDate):null; const past=d!==null&&d<0;
+          return (
+            <Card key={i.id} accent={past?C.line:C.limited}>
+              <AchieveBtn onClick={()=>setAch(i)}/>
+              <div style={{ flex:1, opacity:past?0.5:1 }}>
+                <div style={{ fontSize:15 }}>{i.title}</div>
+                {i.endDate && <div style={{ fontSize:12, marginTop:2, color:past?C.sub:C.limited, fontWeight:600 }}>{past?"逃しちゃった":d===0?"今日まで！":`あと ${d} 日`}<span style={{ color:C.sub, fontWeight:400 }}>　{i.endDate}</span></div>}
+              </div>
+              <DelX onClick={()=>p.onRemove(i.id)}/>
+            </Card>
+          );
+        })}
+        {!list.length && <Empty art="limited">期間限定で行きたい展覧会やイベントを。</Empty>}
+      </div>
+      {open && (
+        <Sheet onClose={()=>setOpen(false)} title="いまだけのもの">
+          <input autoFocus value={title} onChange={(e)=>setTitle(e.target.value)} placeholder="例：○○展、期間限定カフェ…" style={sIn}/>
+          <label style={{ fontSize:12.5, color:C.sub, marginTop:4 }}>終了日（任意）</label>
+          <input type="date" value={date} onChange={(e)=>setDate(e.target.value)} style={sIn}/>
+          <button onClick={save} style={{ ...sSave, background:C.limited }}>追加する</button>
+        </Sheet>
+      )}
+      {ach && <AchieveSheet item={ach} onClose={()=>setAch(null)} onConfirm={(note,ph)=>{ p.onAchieve(ach.id,note); if(ph.length)p.onSavePhotos(ach.id,ph); setAch(null); }}/>}
+    </div>
+  );
+}
+
+function Someday(p){
+  const [ach,setAch]=useState(null);
+  const list=p.items.filter((i)=>i.zone==="someday"&&!i.done);
+  return (
+    <div>
+      <ZoneIntro k="someday"/>
+      <InputRow color={C.someday} placeholder="いつか、いつの日か…" onAdd={(t)=>p.onAdd("someday",t)}/>
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+        {list.map((i)=>(
+          <div key={i.id} style={{ background:C.someday, color:"#fff", borderRadius:14, padding:14, minHeight:96, display:"flex", flexDirection:"column", justifyContent:"space-between" }}>
+            <Star size={16} style={{ opacity:0.6 }}/>
+            <span style={{ fontSize:14.5, lineHeight:1.4, fontWeight:600 }}>{i.title}</span>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:6 }}>
+              <button onClick={()=>setAch(i)} style={{ fontSize:12, color:"#fff", background:"rgba(255,255,255,0.18)", border:"none", borderRadius:7, padding:"4px 8px", cursor:"pointer" }}>叶えた</button>
+              <button onClick={()=>p.onRemove(i.id)} aria-label="削除" style={{ background:"transparent", border:"none", color:"rgba(255,255,255,0.6)", cursor:"pointer" }}><X size={15}/></button>
+            </div>
+          </div>
+        ))}
+      </div>
+      {!list.length && <Empty art="someday">叶わなくてもいい、大きな夢を置いておく場所。</Empty>}
+      {ach && <AchieveSheet item={ach} onClose={()=>setAch(null)} onConfirm={(note,ph)=>{ p.onAchieve(ach.id,note); if(ph.length)p.onSavePhotos(ach.id,ph); setAch(null); }}/>}
+    </div>
+  );
+}
+
+function Done(p){
+  const list=p.items.filter((i)=>i.done).sort((a,b)=>(b.doneAt||0)-(a.doneAt||0));
+  return (
+    <div>
+      <ZoneIntro k="done"/>
+      <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+        {list.map((i)=>{
+          const ph=p.photos[i.id]||[];
+          return (
+            <div key={i.id} style={{ background:"#fff", border:`1px solid ${C.line}`, borderRadius:12, padding:"12px 14px" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                <div style={{ width:24, height:24, borderRadius:"50%", background:C.done, display:"grid", placeItems:"center", flexShrink:0 }}><span style={{color:"#fff"}}><Check size={15} strokeWidth={3}/></span></div>
+                <span style={{ flex:1, fontSize:15 }}>{i.title}</span>
+                <span style={{ fontSize:11, color:C.sub }}>{ZONES[i.zone] && ZONES[i.zone].label}</span>
+                <DelX onClick={()=>p.onRemove(i.id)}/>
+              </div>
+              {i.note && <p style={{ margin:"8px 0 0 32px", fontSize:13, color:C.sub, lineHeight:1.5 }}>“{i.note}”</p>}
+              <div style={{ margin:"10px 0 0 32px" }}>
+                <PhotoStrip photos={ph} onView={p.onView} onChange={(arr)=>p.onSavePhotos(i.id,arr)}/>
+              </div>
+              {i.doneAt && <p style={{ margin:"8px 0 0 32px", fontSize:11, color:C.sub }}>{new Date(i.doneAt).toLocaleDateString("ja-JP")}</p>}
+            </div>
+          );
+        })}
+      </div>
+      {!list.length && <Empty art="done">まだ空っぽ。ひとつ叶えると、ここに残ります。</Empty>}
+    </div>
+  );
+}
+
+function PhotoStrip({ photos, onChange, onView }){
+  const ref=useRef(null);
+  const pick=async(e)=>{
+    const files=Array.from(e.target.files||[]).slice(0, MAX_PHOTOS-photos.length);
+    const next=[...photos]; for(const f of files){ try{ next.push(await compress(f)); }catch(err){} }
+    onChange(next); e.target.value="";
+  };
+  return (
+    <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+      {photos.map((src,i)=>(
+        <div key={i} style={{ position:"relative" }}>
+          <img src={src} alt="" onClick={()=>onView(src)} style={{ width:56, height:56, objectFit:"cover", borderRadius:8, cursor:"pointer", display:"block" }}/>
+          <button onClick={()=>onChange(photos.filter((_,j)=>j!==i))} aria-label="写真を削除"
+            style={{ position:"absolute", top:-6, right:-6, width:18, height:18, borderRadius:"50%", border:"none", background:C.ink, color:"#fff", cursor:"pointer", fontSize:10, lineHeight:"18px" }}>×</button>
+        </div>
+      ))}
+      {photos.length<MAX_PHOTOS && (
+        <React.Fragment>
+          <button onClick={()=>ref.current&&ref.current.click()} aria-label="写真を追加"
+            style={{ width:56, height:56, borderRadius:8, border:`1.5px dashed ${C.line}`, background:"transparent", color:C.sub, cursor:"pointer", display:"grid", placeItems:"center" }}><ImagePlus size={18}/></button>
+          <input ref={ref} type="file" accept="image/*" multiple onChange={pick} style={{ display:"none" }}/>
+        </React.Fragment>
+      )}
+    </div>
+  );
+}
+
+function Roulette({ pool, onClose, onAchieve }){
+  const [disp,setDisp]=useState(pool[0]); const [spin,setSpin]=useState(true);
+  const [res,setRes]=useState(null); const [done,setDone]=useState(false);
+  useEffect(()=>{
+    const reduce=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const final=pool[Math.floor(Math.random()*pool.length)];
+    if(reduce||pool.length===1){ setDisp(final); setRes(final); setSpin(false); return; }
+    let n=0, delay=60; const total=16+Math.floor(Math.random()*6); let t;
+    const tick=()=>{ setDisp(pool[Math.floor(Math.random()*pool.length)]); n++;
+      if(n<total){ delay+= n>total-6?55:12; t=setTimeout(tick,delay); }
+      else { setDisp(final); setRes(final); setSpin(false); } };
+    t=setTimeout(tick,delay); return ()=>clearTimeout(t);
+  },[]);
+  return (
+    <Backdrop onClose={spin?()=>{}:onClose}>
+      <div style={{ textAlign:"center" }}>
+        <p style={{ fontSize:13, color:C.sub, margin:"0 0 14px", letterSpacing:"0.1em" }}>{spin?"えらんでいます…":"今日は、これ！"}</p>
+        <div style={{ background:C.daily, color:"#fff", borderRadius:18, padding:"32px 20px", fontSize:22, fontWeight:800, minHeight:90, display:"grid", placeItems:"center", transform:spin?"scale(0.98)":"scale(1)", transition:"transform .2s", lineHeight:1.3 }}>{disp&&disp.title}</div>
+        {!spin && (
+          <div style={{ marginTop:20, display:"flex", gap:10 }}>
+            <button onClick={onClose} style={{ flex:1, padding:13, borderRadius:11, border:`1.5px solid ${C.line}`, background:"#fff", color:C.ink, fontSize:15, fontWeight:600, cursor:"pointer" }}>閉じる</button>
+            <button disabled={done} onClick={()=>{ onAchieve(res.id); setDone(true); }} style={{ flex:1, padding:13, borderRadius:11, border:"none", background:done?C.line:C.done, color:"#fff", fontSize:15, fontWeight:700, cursor:done?"default":"pointer" }}>{done?"記録した！":"やった！"}</button>
+          </div>
+        )}
+      </div>
+    </Backdrop>
+  );
+}
+
+function AchieveSheet({ item, onClose, onConfirm }){
+  const [note,setNote]=useState(""); const [ph,setPh]=useState([]); const ref=useRef(null);
+  const pick=async(e)=>{
+    const files=Array.from(e.target.files||[]).slice(0, MAX_PHOTOS-ph.length);
+    const next=[...ph]; for(const f of files){ try{ next.push(await compress(f)); }catch(err){} }
+    setPh(next); e.target.value="";
+  };
+  return (
+    <Sheet onClose={onClose} title="叶えた！">
+      <p style={{ fontSize:15, fontWeight:700, margin:"0 0 2px" }}>{item.title}</p>
+      <label style={{ fontSize:12.5, color:C.sub, marginTop:8 }}>ひとこと記録（任意）</label>
+      <textarea autoFocus value={note} onChange={(e)=>setNote(e.target.value)} rows={2} placeholder="どうだった？" style={{ ...sIn, resize:"none" }}/>
+      <label style={{ fontSize:12.5, color:C.sub, marginTop:10 }}>写真（最大{MAX_PHOTOS}枚）</label>
+      <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginTop:4 }}>
+        {ph.map((src,i)=>(
+          <div key={i} style={{ position:"relative" }}>
+            <img src={src} alt="" style={{ width:56, height:56, objectFit:"cover", borderRadius:8, display:"block" }}/>
+            <button onClick={()=>setPh(ph.filter((_,j)=>j!==i))} aria-label="削除" style={{ position:"absolute", top:-6, right:-6, width:18, height:18, borderRadius:"50%", border:"none", background:C.ink, color:"#fff", cursor:"pointer", fontSize:10, lineHeight:"18px" }}>×</button>
+          </div>
+        ))}
+        {ph.length<MAX_PHOTOS && (
+          <React.Fragment>
+            <button onClick={()=>ref.current&&ref.current.click()} aria-label="写真を追加" style={{ width:56, height:56, borderRadius:8, border:`1.5px dashed ${C.line}`, background:"transparent", color:C.sub, cursor:"pointer", display:"grid", placeItems:"center" }}><ImagePlus size={18}/></button>
+            <input ref={ref} type="file" accept="image/*" multiple onChange={pick} style={{ display:"none" }}/>
+          </React.Fragment>
+        )}
+      </div>
+      <button onClick={()=>onConfirm(note,ph)} style={{ ...sSave, background:C.done }}>記録に残す</button>
+    </Sheet>
+  );
+}
+
+function Card({ children, accent }){
+  return <div style={{ background:"#fff", border:`1px solid ${C.line}`, borderLeft:`4px solid ${accent}`, borderRadius:12, padding:"12px 14px", display:"flex", alignItems:"center", gap:10 }}>{children}</div>;
+}
+function AchieveBtn({ onClick }){
+  return <button onClick={onClick} aria-label="叶えた" style={{ flexShrink:0, width:34, height:34, borderRadius:"50%", border:`1.5px solid ${C.done}`, background:"transparent", color:C.done, cursor:"pointer", display:"grid", placeItems:"center" }}><Check size={17} strokeWidth={2.6}/></button>;
+}
+function DelX({ onClick }){ return <button onClick={onClick} aria-label="削除" style={{ background:"transparent", border:"none", color:C.sub, cursor:"pointer", padding:2, flexShrink:0 }}><X size={16}/></button>; }
+function ZoneIntro({ k }){ return <p style={{ fontSize:12.5, color:C.sub, margin:"0 2px 14px", lineHeight:1.6 }}>{ZONES[k].hint}</p>; }
+function AddBar({ onClick, color, label }){
+  return <button onClick={onClick} style={{ width:"100%", border:`1.5px dashed ${color}`, background:"transparent", color, borderRadius:12, padding:13, fontSize:14.5, fontWeight:600, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}><Plus size={18}/> {label}</button>;
+}
+function Empty({ children, art }){
+  return <div style={{ textAlign:"center", padding:"26px 20px" }}><Doodle kind={art}/><p style={{ color:C.sub, fontSize:13.5, lineHeight:1.7, marginTop:14 }}>{children}</p></div>;
+}
+function Doodle({ kind }){
+  const s={ width:76, height:76 };
+  const c = kind==="limited"?C.limited : kind==="someday"?C.someday : kind==="done"?C.done : C.daily;
+  const common={ stroke:c, strokeWidth:2.4, fill:"none", strokeLinecap:"round", strokeLinejoin:"round" };
+  if(kind==="limited") return (<svg viewBox="0 0 80 80" style={s}><g {...common}><path d="M28 16 h24 M28 64 h24"/><path d="M30 16 L30 22 Q30 34 40 40 Q50 34 50 22 L50 16"/><path d="M30 64 L30 58 Q30 46 40 40 Q50 46 50 58 L50 64"/><path d="M34 23 h12 L40 33 z" fill={c} stroke="none"/><path d="M40 47 L46 58 H34 z" fill={c} stroke="none"/></g></svg>);
+  if(kind==="someday") return (<svg viewBox="0 0 80 80" style={s}><g {...common}><path d="M40 16 l5 12 13 1 -10 9 3 13 -11 -7 -11 7 3 -13 -10 -9 13 -1z"/></g></svg>);
+  if(kind==="done") return (<svg viewBox="0 0 80 80" style={s}><g {...common}><path d="M26 22 h28 v10 a14 14 0 0 1 -28 0 z"/><path d="M26 26 h-7 a6 6 0 0 0 7 10"/><path d="M54 26 h7 a6 6 0 0 1 -7 10"/><path d="M40 46 v8 M32 58 h16"/></g></svg>);
+  return (<svg viewBox="0 0 80 80" style={s}><g {...common}><circle cx="40" cy="32" r="14"/><path d="M33 46 h14 M35 51 h10 M37 55 h6"/><path d="M40 9 v6 M59 17 l-4 4 M21 17 l4 4 M64 38 h-6 M16 38 h6"/></g></svg>);
+}
+function Backdrop({ children, onClose }){
+  return <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.45)", display:"flex", alignItems:"center", justifyContent:"center", padding:24, zIndex:50 }}><div onClick={(e)=>e.stopPropagation()} style={{ width:"100%", maxWidth:400 }}>{children}</div></div>;
+}
+function Sheet({ children, onClose, title }){
+  return <Backdrop onClose={onClose}><div style={{ background:C.paper, borderRadius:18, padding:20, display:"flex", flexDirection:"column", gap:6 }}>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+      <h3 style={{ margin:0, fontSize:17, fontWeight:800 }}>{title}</h3>
+      <button onClick={onClose} aria-label="閉じる" style={{ background:"transparent", border:"none", cursor:"pointer", color:C.sub }}><X size={20}/></button>
+    </div>{children}</div></Backdrop>;
+}
+const sIn={ border:`1px solid ${C.line}`, borderRadius:10, padding:"11px 12px", fontSize:15, outline:"none", background:"#fff", color:C.ink, marginTop:4, width:"100%" };
+const sSave={ border:"none", color:"#fff", borderRadius:11, padding:13, fontSize:15, fontWeight:700, cursor:"pointer", marginTop:14 };
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
